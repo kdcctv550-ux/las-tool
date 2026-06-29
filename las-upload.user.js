@@ -5,6 +5,8 @@
 // @description  폴더 한 번 선택하면 파일명 태그(m1s2 등)대로 라스 장면에 이미지/영상 자동 주입. 외부 통신 0건 — 전부 내 브라우저 안에서만 동작.
 // @match        https://lucystar.kr/*
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/kdcctv550-ux/las-tool/main/las-upload.user.js
+// @downloadURL  https://raw.githubusercontent.com/kdcctv550-ux/las-tool/main/las-upload.user.js
 // @grant        none
 // ==/UserScript==
 
