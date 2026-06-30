@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LAS 자동 업로드 (폴더 → 라스)
 // @namespace    https://local.lars-auto-filler/
-// @version      2.9.0
+// @version      3.0.0
 // @description  폴더 한 번 선택하면 파일명 태그(m1s2 등)대로 라스 장면에 이미지/영상 자동 주입. 외부 통신 0건 — 전부 내 브라우저 안에서만 동작.
 // @match        https://lucystar.kr/*
 // @run-at       document-idle
@@ -50,7 +50,7 @@
     navPollMs: 150,          // URL 도착 확인 폴링 간격
     navTimeoutMs: 5000,      // 한 단계 네비 최대 대기
     renderTimeoutMs: 5000,   // 업로드 입구 렌더 최대 대기
-    uploadSettleMs: 3000,    // 주입 후 라스 처리 대기
+    uploadSettleMs: 1500,    // 주입 후 라스 처리 대기 (워커타이머라 단축)
     humanJitterMs: 700,      // 무작위 추가 대기
   };
 
@@ -71,11 +71,26 @@
   // ════════════════════════════════════════════════════════════
   // 유틸
   // ════════════════════════════════════════════════════════════
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // 백그라운드 탭에서도 안 느려지는 타이머: Web Worker 의 setTimeout 은 throttle 안 됨.
+  let _timerWorker = null, _timerSeq = 0;
+  const _timerCbs = {};
+  (function initTimerWorker() {
+    try {
+      const code = "onmessage=function(e){var d=e.data;setTimeout(function(){postMessage(d.id)},d.ms)}";
+      const blob = new Blob([code], { type: "application/javascript" });
+      _timerWorker = new Worker(URL.createObjectURL(blob));
+      _timerWorker.onmessage = (e) => { const cb = _timerCbs[e.data]; if (cb) { delete _timerCbs[e.data]; cb(); } };
+    } catch (_) { _timerWorker = null; }
+  })();
+  const sleep = (ms) => new Promise((r) => {
+    if (_timerWorker) { const id = ++_timerSeq; _timerCbs[id] = r; _timerWorker.postMessage({ id, ms }); }
+    else { setTimeout(r, ms); }
+  });
   const jitter = () => Math.floor(Math.random() * CONFIG.humanJitterMs);
   const norm = (s) => String(s || "").toLowerCase().replace(/[\s,\/]/g, "");
 
-  // 백그라운드 탭 절전 방지: 무음 오디오를 재생하면 크롬이 탭을 안 재움.
+  // 백그라운드 탭 절전 방지: 무음에 가까운 오디오 재생 → 크롬이 탭을 "소리남"으로 보고 안 재움.
+  // (gain 너무 작으면 audible 판정 안 돼서 효과 없음 → 들릴락말락 수준으로 약간 키움)
   let _audioCtx = null, _silenceNode = null;
   function keepAwake(on) {
     try {
@@ -85,8 +100,8 @@
         if (!_silenceNode) {
           const osc = _audioCtx.createOscillator();
           const gain = _audioCtx.createGain();
-          gain.gain.value = 0.0001; // 사실상 무음
-          osc.frequency.value = 30;
+          gain.gain.value = 0.003; // 거의 안 들리지만 크롬이 audible 로 인식하는 수준
+          osc.frequency.value = 20; // 가청 하한(거의 안 들림)
           osc.connect(gain); gain.connect(_audioCtx.destination);
           osc.start();
           _silenceNode = { osc, gain };
@@ -95,7 +110,7 @@
         if (_silenceNode) { try { _silenceNode.osc.stop(); } catch (_) {} _silenceNode = null; }
         if (_audioCtx) { try { _audioCtx.suspend(); } catch (_) {} }
       }
-    } catch (e) { /* 오디오 차단 환경이면 무시 — 그냥 기존대로 동작 */ }
+    } catch (e) { /* 오디오 차단 환경이면 무시 — 워커 타이머가 주 방어선 */ }
   }
 
   function log(msg, type = "info") {
@@ -699,7 +714,7 @@
     p.innerHTML = `
       <div id="laf-head" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#171a23;cursor:move;border-bottom:1px solid rgba(255,255,255,.06)">
         <span style="font-weight:700;color:#a78bfa">🎬 LAS 자동 업로드</span>
-        <span style="margin-left:auto;font-size:11px;color:#64748b">v2.9</span>
+        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.0</span>
         <button id="laf-min" style="background:none;border:0;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1">—</button>
       </div>
       <div id="laf-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;overflow:auto">
