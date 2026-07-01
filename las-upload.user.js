@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LAS 자동 업로드 (폴더 → 라스)
 // @namespace    https://local.lars-auto-filler/
-// @version      3.0.0
+// @version      3.1.0
 // @description  폴더 한 번 선택하면 파일명 태그(m1s2 등)대로 라스 장면에 이미지/영상 자동 주입. 외부 통신 0건 — 전부 내 브라우저 안에서만 동작.
 // @match        https://lucystar.kr/*
 // @run-at       document-idle
@@ -250,7 +250,7 @@
   async function enableSubByLabel(mm, ss, cc) {
     if (!AUTO_SUB_CHECK) return;
     const needle = labelNeedle(mm, ss, cc);
-    const boxes = [...document.querySelectorAll('input[type="checkbox"]')];
+    const boxes = [...document.querySelectorAll('input[type="checkbox"]')].filter((b) => !b.closest("#laf-panel"));
     for (const box of boxes) {
       // 체크박스의 위쪽 4단계 조상 텍스트에 라벨 + "서브" 가 있는지
       let ctx = box, txt = "";
@@ -409,7 +409,7 @@
     if (s.selectedSubDialogue.generate_sub_scene) return; // 이미 켜짐
     const targetId = s.selectedSubDialogue.id;
 
-    const allBoxes = [...document.querySelectorAll('input[type="checkbox"]')];
+    const allBoxes = [...document.querySelectorAll('input[type="checkbox"]')].filter((b) => !b.closest("#laf-panel"));
     let box = null;
 
     // 방법1: Alpine 스코프 dlg.id 매칭
@@ -714,7 +714,7 @@
     p.innerHTML = `
       <div id="laf-head" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#171a23;cursor:move;border-bottom:1px solid rgba(255,255,255,.06)">
         <span style="font-weight:700;color:#a78bfa">🎬 LAS 자동 업로드</span>
-        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.0</span>
+        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.1</span>
         <button id="laf-min" style="background:none;border:0;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1">—</button>
       </div>
       <div id="laf-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;overflow:auto">
@@ -723,7 +723,7 @@
         <button id="laf-pick" style="background:#8b5cf6;color:#fff;border:0;padding:9px;border-radius:8px;font-weight:600;cursor:pointer">📁 폴더 선택</button>
         <div id="laf-summary" style="font-size:12px;color:#94a3b8;min-height:18px"></div>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#94a3b8;cursor:pointer">
-          <input id="laf-testone" type="checkbox" checked> 첫 파일 1개만 (테스트)
+          <input id="laf-testone" type="checkbox"> 첫 파일 1개만 (테스트)
         </label>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#94a3b8;cursor:pointer">
           <input id="laf-autosub" type="checkbox" checked> 서브 체크 자동 켜기
@@ -808,7 +808,7 @@
 
     // 스토리보드: 안 켜진 "서브" 체크박스 일괄 켜기 (끄지 않음). 라벨 m 범위 필터 옵션.
     async function bulkSubCheck(fromM, toM) {
-      const all = [...document.querySelectorAll('input[type="checkbox"]')];
+      const all = [...document.querySelectorAll('input[type="checkbox"]')].filter((b) => !b.closest("#laf-panel"));
       const needM = (fromM != null || toM != null);
       const targets = all.filter((b) => {
         if (b.checked) return false;
