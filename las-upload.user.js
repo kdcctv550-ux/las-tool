@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LAS 자동 업로드 (폴더 → 라스)
 // @namespace    https://local.lars-auto-filler/
-// @version      3.1.0
+// @version      3.2.0
 // @description  폴더 한 번 선택하면 파일명 태그(m1s2 등)대로 라스 장면에 이미지/영상 자동 주입. 외부 통신 0건 — 전부 내 브라우저 안에서만 동작.
 // @match        https://lucystar.kr/*
 // @run-at       document-idle
@@ -12,22 +12,23 @@
 
 /*
  * ─────────────────────────────────────────────────────────────
- *  v0.3 — 진단 결과 반영판 (2026-06-12 진단 로그 기준)
+ *  v3.2 — 진단 결과 반영판 (기반: 2026-06-12 진단 로그)
  *
  *  ◆ 진단으로 확정된 사실
- *    - URL 구조: /episodes/{id}/{board}/m{M}/s{S}  (예: /episodes/16532/imageboard/m1/s1)
- *    - SPA: 장면 전환 시 새로고침 없이 가운데만 바뀌고 URL이 /m1/s2 식으로 갱신됨
- *    - 이미지 업로드 입구: input[x-ref="scenePreviewUploadInput"][accept="image/*"] ✓
- *    - "서브장면" 버튼 존재 ✓ / mXsY 라벨("M1, S2") 다수 ✓
- *    - 장면으로 가는 실제 <a href="/episodes/16532/imageboard/m1/s1"> 링크 존재 ✓
+ *    - URL 구조(2단/롱폼): /episodes/{id}/{board}/m{M}/s{S}
+ *    - URL 구조(3단/쇼핑):  /episodes/{id}/{board}/m{M}/s{S}/c{C}
+ *    - SPA: 장면 전환 시 새로고침 없이 가운데만 바뀌고 URL만 갱신됨
+ *    - 이미지 업로드 입구: input[x-ref="scenePreviewUploadInput"][accept="image/*"]
+ *    - "서브장면" 버튼 존재 / mXsY 라벨("M1, S2") 다수
  *    - 영상 드롭존/피커는 이미지보드엔 없음 (비디오보드 전용 — 정상)
  *
- *  ◆ v0.3 네비게이션 전략 (추측 셀렉터 제거)
- *    ① 목표 경로의 <a> 링크가 있으면 그걸 클릭 (가장 확실)
- *    ② 없으면: 메인 장면(m{M}/s1) 링크 클릭 → "서브장면" 펼침 → 라벨 텍스트로 서브 클릭
- *    ③ 그래도 안 되면: history.pushState + popstate 폴백
- *    각 단계 후 URL 폴링으로 "정말 도착했는지" 검증하고,
- *    주입 전에 업로드 입구가 나타날 때까지 기다림 (SPA 렌더 대기)
+ *  ◆ 네비게이션 전략 (★ pushState 폴백 절대 금지 — 가짜 도착→오업로드)
+ *    ① 왼쪽 목록의 라벨 텍스트("M1, S2") 클릭 우선. href 없어 전체 새로고침 안 남.
+ *    ② 서브장면이 접혀 있으면 "서브장면" 펼침 후 라벨 재시도.
+ *    ③ 최후수단으로만 목표 경로 <a> 링크의 "안쪽 자식"을 클릭(전체이동 회피).
+ *    → clickUntilArrived 로 앱이 실제로 URL을 바꿨는지 검증. 도착 확인 안 되면
+ *      절대 주입하지 않고 그 파일은 실패 처리(오업로드/새로고침 방지).
+ *    → 주입 전 previewReady()로 업로드 입구·미리보기 렌더 대기(SPA 렌더 대기).
  *
  *  ◆ 프라이버시 원칙 (불변)
  *    - fetch / XHR / GM_xmlhttpRequest 없음. @grant none.
@@ -252,13 +253,19 @@
     const needle = labelNeedle(mm, ss, cc);
     const boxes = [...document.querySelectorAll('input[type="checkbox"]')].filter((b) => !b.closest("#laf-panel"));
     for (const box of boxes) {
-      // 체크박스의 위쪽 4단계 조상 텍스트에 라벨 + "서브" 가 있는지
-      let ctx = box, txt = "";
-      for (let k = 0; k < 4 && ctx; k++) {
+      // 체크박스에서 위로 최대 10단계 올라가며 라벨(needle)과 "서브" 를 모두 만나는지 확인.
+      // ★ 함정: 라벨("M5, S2")과 "서브" 가 다른 가지에 떨어져 있어, needle 이 먼저 나와도
+      //   멈추지 말고 "서브" 까지 확인해야 함(스토리보드 bulkSubCheck 와 동일한 10단계 규칙).
+      let ctx = box, hasNeedle = false, hasSub = false;
+      for (let k = 0; k < 10 && ctx; k++) {
         ctx = ctx.parentElement;
-        if (ctx) { txt = norm(ctx.textContent); if (txt.includes(needle)) break; }
+        if (!ctx) break;
+        const txt = norm(ctx.textContent);
+        if (txt.includes(needle)) hasNeedle = true;
+        if (txt.includes("서브")) hasSub = true;
+        if (hasNeedle && hasSub) break;
       }
-      if (txt.includes(needle) && txt.includes("서브")) {
+      if (hasNeedle && hasSub) {
         if (box.checked) return; // 이미 켜짐
         box.click();
         log("  서브 체크 자동 켜기 → 서버 반영 대기…", "info");
@@ -527,16 +534,21 @@
       proto.click = function () {
         if (!done && this.type === "file") {
           done = true;
-          try { setInputFiles(this, file); } catch (_) {}
-          cleanup();
-          resolve(true);
+          const input = this;
+          cleanup(); // setInputFiles 는 input.click() 을 호출하지 않으므로 먼저 원복해도 안전
+          // ★ 실제 반영(uploadLanded)까지 확인한 뒤 성공/실패를 정확히 보고 →
+          //   미반영이면 false 를 돌려 상위(injectImage)가 다음 방법으로 넘어감
+          setInputFiles(input, file)
+            .then((ok) => resolve(!!ok))
+            .catch(() => resolve(false));
           return; // 실제 파일 선택창 안 띄움
         }
         return orig.apply(this, arguments);
       };
       // 버튼 클릭 → Alpine이 input.click() 호출하도록 유도
       realClick(picker);
-      setTimeout(() => { if (!done) { cleanup(); resolve(false); } }, 1200);
+      // 타임아웃도 백그라운드 탭에서 안 밀리게 워커 타이머(sleep) 사용
+      sleep(1200).then(() => { if (!done) { cleanup(); resolve(false); } });
     });
   }
 
@@ -714,7 +726,7 @@
     p.innerHTML = `
       <div id="laf-head" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#171a23;cursor:move;border-bottom:1px solid rgba(255,255,255,.06)">
         <span style="font-weight:700;color:#a78bfa">🎬 LAS 자동 업로드</span>
-        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.1</span>
+        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.2</span>
         <button id="laf-min" style="background:none;border:0;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1">—</button>
       </div>
       <div id="laf-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;overflow:auto">
