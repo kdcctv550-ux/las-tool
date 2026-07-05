@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LAS 자동 업로드 (폴더 → 라스)
 // @namespace    https://local.lars-auto-filler/
-// @version      3.2.0
+// @version      3.6.0
 // @description  폴더 한 번 선택하면 파일명 태그(m1s2 등)대로 라스 장면에 이미지/영상 자동 주입. 외부 통신 0건 — 전부 내 브라우저 안에서만 동작.
 // @match        https://lucystar.kr/*
 // @run-at       document-idle
@@ -112,6 +112,14 @@
         if (_audioCtx) { try { _audioCtx.suspend(); } catch (_) {} }
       }
     } catch (e) { /* 오디오 차단 환경이면 무시 — 워커 타이머가 주 방어선 */ }
+  }
+
+  // 작업 시작 시 로그를 자동으로 펼침(기본 접힘이라 경고를 놓치는 것 방지)
+  function openLog() {
+    const box = document.getElementById("laf-log");
+    const arrow = document.getElementById("laf-log-arrow");
+    if (box) box.style.display = "block";
+    if (arrow) arrow.textContent = "▼";
   }
 
   function log(msg, type = "info") {
@@ -575,10 +583,13 @@
   // 메인 루프
   // ════════════════════════════════════════════════════════════
   let RUNNING = false, ABORT = false, LAST_FAILED = [], AUTO_SUB_CHECK = true;
+  let _bulkRunning = false;
 
   async function runFill(parsed, testOne, onlyList) {
     if (RUNNING) return;
+    if (_bulkRunning) { log("발음 치환 작업 중에는 업로드를 시작할 수 없어요", "warn"); return; }
     RUNNING = true; ABORT = false;
+    openLog(); // 진행/경고 로그가 접혀서 안 보이는 일 방지
     keepAwake(true); // 백그라운드 탭에서도 안 멈추게
 
     const info = parseBoardUrl();
@@ -717,7 +728,7 @@
     p.id = "laf-panel";
     p.style.cssText = [
       "position:fixed", "right:16px", "bottom:16px", "z-index:2147483600",
-      "width:340px", "max-height:72vh", "display:flex", "flex-direction:column",
+      "width:340px", "max-height:90vh", "display:flex", "flex-direction:column",
       "background:#0f1117", "color:#e2e8f0",
       "border:1px solid rgba(139,92,246,.4)", "border-radius:12px",
       "font:13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
@@ -726,7 +737,7 @@
     p.innerHTML = `
       <div id="laf-head" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#171a23;cursor:move;border-bottom:1px solid rgba(255,255,255,.06)">
         <span style="font-weight:700;color:#a78bfa">🎬 LAS 자동 업로드</span>
-        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.2</span>
+        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.6</span>
         <button id="laf-min" style="background:none;border:0;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1">—</button>
       </div>
       <div id="laf-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;overflow:auto">
@@ -764,12 +775,32 @@
             <input id="laf-sb-to" type="number" min="1" placeholder="3" style="width:52px;padding:4px;background:#0a0c12;border:1px solid #334155;border-radius:4px;color:#e2e8f0">
             <button id="laf-sb-range" style="flex:1;background:#5b21b6;color:#fff;border:0;padding:7px;border-radius:8px;font-weight:600;cursor:pointer">범위만 켜기</button>
           </div>
+
+          <div style="border-top:1px solid rgba(168,139,250,.25);margin-top:8px;padding-top:8px;display:flex;flex-direction:column;gap:6px">
+            <div id="laf-pr-head" style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:12px;color:#c4b5fd;font-weight:600">
+              <span id="laf-pr-arrow">▶</span><span>🗣️ 발음용(TTS) 단어 치환</span>
+            </div>
+            <div id="laf-pr-body" style="display:none;flex-direction:column;gap:6px">
+              <div style="font-size:11px;color:#94a3b8">① 찾을단어 넣고 <b>🔍 찾기</b>로 장면 이동 → ② 그 장면 <b>라인 편집</b> 펼치고 → ③ <b>치환</b>. 나레이션 원본 불변, 라스가 자동저장.</div>
+              <input id="laf-pr-find" type="text" placeholder="찾을단어 (예: 15살)" style="padding:6px 8px;background:#0a0c12;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:12px">
+              <div style="display:flex;gap:6px;align-items:center">
+                <button id="laf-pr-find-btn" style="flex:1;background:#2563eb;color:#fff;border:0;padding:7px;border-radius:8px;font-weight:600;cursor:pointer">🔍 찾기 / 다음</button>
+                <span id="laf-pr-count" style="font-size:12px;color:#93c5fd;min-width:44px;text-align:center">-</span>
+              </div>
+              <input id="laf-pr-repl" type="text" placeholder="바꿀단어 (예: 열다섯살)" style="padding:6px 8px;background:#0a0c12;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:12px">
+              <button id="laf-pr-run" style="background:#7c3aed;color:#fff;border:0;padding:8px;border-radius:8px;font-weight:600;cursor:pointer">🗣️ 발음칸 치환 (현재 펼친 것)</button>
+              <button id="laf-pr-all" style="background:#dc2626;color:#fff;border:0;padding:8px;border-radius:8px;font-weight:700;cursor:pointer">⚡ 일괄 치환 (자동 펼침)</button>
+              <div style="font-size:11px;color:#f59e0b">⚡ 일괄은 찾을단어 있는 챕터를 자동으로 펼쳐 치환합니다. 처음엔 테스트 대본에서 확인하세요.</div>
+              <button id="laf-pr-closeall" style="background:#475569;color:#fff;border:0;padding:8px;border-radius:8px;font-weight:600;cursor:pointer">📕 일괄 닫기 (천천히 저장 후 접기)</button>
+              <div style="font-size:11px;color:#94a3b8">각 챕터를 닫기 전 저장을 넉넉히 기다립니다(느림). 급하면 직접 상단 "닫기"를 쓰세요.</div>
+            </div>
+          </div>
         </div>
 
         <div id="laf-log-head" style="display:flex;align-items:center;gap:6px;margin-top:4px;padding:6px 8px;background:#171a23;border-radius:6px;cursor:pointer;user-select:none;font-size:12px;color:#94a3b8">
-          <span id="laf-log-arrow">▼</span><span>로그</span>
+          <span id="laf-log-arrow">▶</span><span>로그</span>
         </div>
-        <div id="laf-log" style="margin-top:4px;padding:8px;background:#0a0c12;border-radius:8px;height:200px;overflow:auto;font:11px/1.45 ui-monospace,Menlo,Consolas,monospace"></div>
+        <div id="laf-log" style="display:none;margin-top:4px;padding:8px;background:#0a0c12;border-radius:8px;height:320px;min-height:320px;overflow:auto;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace"></div>
       </div>`;
     document.body.appendChild(p);
 
@@ -858,6 +889,301 @@
       const f = parseInt(p.querySelector("#laf-sb-from").value, 10);
       const t = parseInt(p.querySelector("#laf-sb-to").value, 10);
       bulkSubCheck(isNaN(f) ? null : f, isNaN(t) ? null : t);
+    });
+
+    // ── 스토리보드: 발음용(TTS) 칸에서 특정 단어만 일괄 치환 (안전판) ──
+    // 원칙: ① autoSaveDialogueLines 강제 호출 절대 안 함(라스 자체 @input debounce에 맡김)
+    //       ② scene 객체 / line.text(나레이션) 절대 안 건드림
+    //       ③ 발음칸 textarea DOM 에만 값 세팅 + input 이벤트 → 라스가 알아서 저장
+    // 발음칸이 닫혀 있으면 그 라인의 "발음용" 버튼을 실제로 클릭해 라스가 나레이션을 복사해 채우게 함.
+    //
+    // 발음칸 textarea 판별: Alpine 스코프에 line 이 있고, 그 textarea 가 line.pronunciation_text 바인딩인지
+    // (x-model 속성 문자열로 확인). 나레이션 textarea(line.text)는 건드리지 않음.
+    function isPronArea(ta) {
+      const xm = ta.getAttribute("x-model") || "";
+      return /pronunciation_text/.test(xm);
+    }
+    function isNarrationArea(ta) {
+      const xm = ta.getAttribute("x-model") || "";
+      // 정확히 line.text 만 (line.pronunciation_text / line.text_xxx 배제)
+      return /\bline\.text\b/.test(xm) && !/pronunciation_text/.test(xm);
+    }
+    // textarea 에 값 넣고 라스(Alpine)가 감지하도록 input 이벤트 발생 (직접 저장 호출 안 함)
+    function setAreaValue(ta, val) {
+      const proto = Object.getPrototypeOf(ta);
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (setter) setter.call(ta, val); else ta.value = val;
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    // 보이는(펼쳐진) 요소 판별 — x-show 숨김은 DOM에 남으므로 가시성으로 구분 (공용 헬퍼)
+    const isVisibleEl = (el) => !!(el && el.offsetParent !== null && el.getClientRects().length);
+
+    // root 를 주면 그 챕터 안만 스캔(일괄 치환의 O(n²) 재스캔 방지). 기본은 문서 전체.
+    async function bulkPronReplace(find, repl, root = document) {
+      if (!find) { log("찾을단어를 입력하세요", "warn"); return; }
+
+      // 1) 나레이션 textarea 전부 수집 → 찾을단어 있는 라인만 고름
+      const narrAreas = [...root.querySelectorAll("textarea")]
+        .filter((t) => !t.closest("#laf-panel") && isNarrationArea(t));
+      if (!narrAreas.length) { log("나레이션칸을 못 찾았어요 (대본 패널을 열어두세요)", "warn"); return; }
+
+      const targets = narrAreas.filter((t) => String(t.value || "").includes(find));
+      if (!targets.length) { log(`"${find}" 가 들어간 나레이션이 없어요`, "warn"); return; }
+
+      log(`대상 ${targets.length}개 — 발음칸 치환 시작 (라스 자동저장에 맡김)`, "info");
+      let ok = 0;
+
+      // 발음용 버튼/발음칸 판별 헬퍼 (라스 실제 DOM 기준)
+      //  - 발음용 열기 버튼: @click="addPronunciationField(line)"  (x-show="!line.showPronunciation")
+      //  - 발음칸 textarea : x-model="line.pronunciation_text"    (x-show="line.showPronunciation")
+      const isAddPronBtn = (b) => {
+        const c = b.getAttribute("@click") || b.getAttribute("x-on:click") || "";
+        return /addPronunciationField/.test(c);
+      };
+
+      for (const narr of targets) {
+        try {
+          // 나레이션 textarea에서 위로 올라가며 "발음용 버튼 또는 발음칸"을 포함하는 조상(=이 라인 카드)을 찾음.
+          let card = narr.parentElement;
+          for (let k = 0; k < 12 && card; k++) {
+            const hasBtn = [...card.querySelectorAll("button")].some(isAddPronBtn);
+            const hasPron = [...card.querySelectorAll("textarea")].some(isPronArea);
+            if (hasBtn || hasPron) break;
+            card = card.parentElement;
+          }
+          if (!card) card = narr.parentElement;
+
+          // ★ 발음칸은 닫혀 있어도 DOM에 남아있고 x-show 로 숨겨질 뿐 → "보이는" 것만 진짜 열린 것.
+          const findVisiblePron = () => [...card.querySelectorAll("textarea")].filter((t) => isPronArea(t) && isVisibleEl(t));
+          let pron = findVisiblePron()[0] || null;
+
+          // 보이는 발음칸이 없으면(=닫힘) 발음용 버튼을 눌러 연다
+          if (!pron) {
+            const btn = [...card.querySelectorAll("button")].find((b) => isAddPronBtn(b) && isVisibleEl(b));
+            if (!btn) { log(`  ⚠ 발음용 버튼을 못 찾음 (라인 편집 펼쳤는지 확인)`, "warn"); continue; }
+            btn.click();
+            const opened = await waitFor(() => findVisiblePron().length > 0, 3000);
+            if (!opened) { log(`  ⚠ 발음용 눌렀지만 발음칸이 안 열림 — 건너뜀`, "warn"); continue; }
+            pron = findVisiblePron()[0];
+          }
+          if (!pron) { log("  ⚠ 발음칸을 못 찾음 — 건너뜀", "warn"); continue; }
+
+          // ★ race 방지: 막 연 발음칸은 라스가 나레이션을 복사해 채우는 데 시간차가 있음 →
+          //   고정 대기 대신 "값이 채워질 때까지" 폴링(최대 1.5초). 원래 빈 칸이면 타임아웃 후 나레이션 기준.
+          await waitFor(() => String(pron.value || "").trim().length > 0, 1500);
+          const cur = String(pron.value || "");
+          const base = cur.trim() ? cur : String(narr.value || "");
+          if (!base.includes(find)) {
+            log(`  이미 처리됨/불일치 — 건너뜀 (${base.slice(0, 20)}…)`, "info");
+            continue;
+          }
+          const next = base.split(find).join(repl);
+          if (next === cur) { log(`  변화 없음 — 건너뜀`, "info"); continue; }
+          setAreaValue(pron, next);                   // 값 세팅 + input 이벤트 (라스가 debounce 저장)
+          // ★ 라스의 뒤늦은 복사가 치환값을 덮어쓸 수 있음 → 잠깐 뒤 값 검증, 다르면 1회 재세팅
+          await sleep(450);
+          if (String(pron.value || "") !== next) {
+            setAreaValue(pron, next);
+            await sleep(250);
+            if (String(pron.value || "") !== next) { log(`  ⚠ 값이 유지 안 됨 — 이 라인 수동 확인 필요`, "warn"); continue; }
+          }
+          ok++;
+          log(`  ✓ "${find}"→"${repl}"  (${String(narr.value).slice(0, 22)}…)`, "ok");
+          await sleep(250);
+        } catch (e) {
+          log(`  하나 실패: ${String(e).slice(0, 40)}`, "warn");
+        }
+      }
+      if (!ok) log(`⚠ 치환된 게 없어요 — 라인 편집을 펼친 상태인지 확인하세요`, "warn");
+      else log(`✅ ${ok}개 발음칸 치환 완료 — 라스가 자동저장합니다`, "ok");
+      return ok;
+    }
+
+    // ── 일괄 치환: 찾을단어가 있는 챕터를 자동으로 펼쳐(startDialogueEdit) 치환하고,
+    //    찾을단어가 없던 챕터는 다시 닫음(closeDialogueEdit). 저장은 라스 자동저장에 맡김.
+    //    ★ autoSaveDialogueLines 를 직접 부르지 않음(사고 방지) — 오직 라스 버튼 클릭과 input 이벤트만 사용.
+    const isEditOpenBtn = (b) => {
+      const c = b.getAttribute("@click") || b.getAttribute("x-on:click") || "";
+      return /startDialogueEdit/.test(c);
+    };
+    const isEditCloseBtn = (b) => {
+      const c = b.getAttribute("@click") || b.getAttribute("x-on:click") || "";
+      return /closeDialogueEdit/.test(c);
+    };
+
+    async function bulkPronReplaceAll(find, repl) {
+      if (!find) { log("찾을단어를 입력하세요", "warn"); return; }
+      if (_bulkRunning) { log("이미 일괄 처리 중이에요", "warn"); return; }
+      _bulkRunning = true;
+      try {
+        // 1) 화면에 보이는 "라인 편집(펼치기)" 버튼 = 아직 안 펼친 챕터들
+        const openBtns = [...document.querySelectorAll("button")].filter((b) => isEditOpenBtn(b) && isVisibleEl(b));
+
+        // 2) ★ 펼치기 전에 각 챕터의 요약 나레이션(x-text="line.text")을 먼저 읽어
+        //    찾을단어가 있는 챕터만 골라 펼친다(없는 챕터는 아예 안 건드림 → 닫기 로직 불필요).
+        const chaptersToOpen = [];
+        for (const openBtn of openBtns) {
+          // 이 버튼에서 위로 올라가 요약 나레이션(x-text="line.text")을 품은 챕터 컨테이너를 찾음
+          let box = openBtn.parentElement;
+          for (let k = 0; k < 15 && box; k++) {
+            if (box.querySelector('[x-text="line.text"]')) break;
+            box = box.parentElement;
+          }
+          if (!box) continue;
+          const hit = [...box.querySelectorAll('[x-text="line.text"]')]
+            .some((el) => (el.textContent || "").includes(find));
+          if (hit) chaptersToOpen.push({ openBtn, box }); // ★ box 도 저장 → 그 챕터만 스캔
+        }
+
+        log(`찾을단어 있는 챕터 ${chaptersToOpen.length}개만 펼쳐서 치환합니다`, "info");
+        if (!chaptersToOpen.length) { log(`"${find}" 가 든 챕터가 없어요 (요약 나레이션 기준)`, "warn"); return; }
+
+        // 3) 해당 챕터만 펼쳐서 치환 (펼친 채로 둠)
+        let totalOk = 0, touchedChapters = 0;
+        for (const { openBtn, box } of chaptersToOpen) {
+          if (!isVisibleEl(openBtn)) continue;   // 이미 펼쳐졌으면 스킵
+          openBtn.click();
+          // ★ 이 챕터(box) 안에서 나레이션 textarea 가 보일 때까지 대기 → 문서 전체 오탐 방지
+          await waitFor(() => box.isConnected && [...box.querySelectorAll("textarea")].some((t) => isNarrationArea(t) && isVisibleEl(t)), 3000);
+          await sleep(400);
+          // 펼침 재렌더로 box 가 DOM에서 떨어졌으면(드묾) 문서 전체로 폴백 — includes 가드가 있어 안전
+          const scanRoot = box.isConnected ? box : document;
+          const ok = await bulkPronReplace(find, repl, scanRoot); // ★ 이 챕터만 스캔 (O(n²)·로그도배 해소)
+          totalOk += (ok || 0);
+          touchedChapters++;
+        }
+        log(`⚡ 일괄 완료 — ${touchedChapters}개 챕터에서 ${totalOk}개 치환. 펼쳐진 챕터를 눈으로 확인하세요.`, "ok");
+      } catch (e) {
+        log(`일괄 처리 오류: ${String(e).slice(0, 50)}`, "err");
+      } finally {
+        _bulkRunning = false;
+      }
+    }
+
+    // ── 찾기: 요약 화면의 나레이션에서 찾을단어가 있는 장면으로 스크롤 순회 (읽기 전용, 안전) ──
+    // 대본이 접힌(요약) 상태에선 나레이션이 textarea 가 아니라 텍스트 요소로만 보임.
+    // 그 텍스트 요소들을 찾아 하나씩 스크롤 이동 + 개수 표시. 아무것도 수정하지 않음.
+    let _findState = { key: "", idx: -1 }; // list 는 매번 재수집하므로 저장 안 함
+    function collectNarrationNodes(find) {
+      // 나레이션만 정확히 잡는다. 라스 나레이션 표식은 x-text/x-model="line.text".
+      //   요약 상태: <p x-text="line.text">…</p>
+      //   펼침 상태: <textarea x-model="line.text">
+      // 이미지/모션 프롬프트는 line.text 가 아니라 잡히지 않음(개수 정확).
+      const out = [];
+      for (const el of document.querySelectorAll('[x-text="line.text"], [x-model="line.text"]')) {
+        if (el.closest("#laf-panel")) continue;
+        const txt = el.tagName === "TEXTAREA" ? String(el.value || "") : (el.textContent || "");
+        if (txt.includes(find)) out.push(el);
+      }
+      return out;
+    }
+    function doFind(find) {
+      if (!find) { log("찾을단어를 입력하세요", "warn"); return; }
+      const cnt = p.querySelector("#laf-pr-count");
+      // ★ 매번 새로 수집 (요소가 재생성돼도 항상 현재 DOM 기준). 화면 위→아래 순서로 정렬.
+      let list = collectNarrationNodes(find).filter((el) => el.getClientRects().length > 0);
+      list.sort((a, b) => {
+        const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+        return (ra.top - rb.top) || (ra.left - rb.left);
+      });
+      if (!list.length) {
+        if (cnt) cnt.textContent = "0개";
+        log(`"${find}" 못 찾음`, "warn");
+        _findState = { key: find, idx: -1 };
+        return;
+      }
+      // 검색어가 바뀌었으면 처음부터, 같으면 다음 순번으로
+      let nextIdx = 0;
+      if (_findState.key === find) nextIdx = (_findState.idx + 1) % list.length;
+      _findState = { key: find, idx: nextIdx };
+      const el = list[nextIdx];
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      // 잠깐 노란 테두리로 강조 (스타일만, 원복)
+      const prev = el.style.outline;
+      el.style.outline = "3px solid #fbbf24";
+      el.style.outlineOffset = "2px";
+      setTimeout(() => { el.style.outline = prev; el.style.outlineOffset = ""; }, 1800);
+      if (cnt) cnt.textContent = `${nextIdx + 1}/${list.length}`;
+      log(`🔍 "${find}" ${nextIdx + 1}/${list.length} 로 이동 — 라인 편집 펼치고 치환하세요`, "info");
+    }
+    p.querySelector("#laf-pr-find-btn").addEventListener("click", () => {
+      doFind(p.querySelector("#laf-pr-find").value.trim());
+    });
+    // 치환 버튼(단일/일괄) 활성·비활성.
+    //  - 찾을단어: trim 기준으로 비어 있으면 비활성(공백만으론 찾을 대상이 없음).
+    //  - 바꿀단어: "완전히 빈 문자열"일 때만 비활성. ★ 스페이스만 입력은 유효(단어를 공백으로 지우는 삭제용).
+    function updatePrButtons() {
+      const find = p.querySelector("#laf-pr-find").value.trim();
+      const repl = p.querySelector("#laf-pr-repl").value;   // trim 하지 않음(공백도 유효)
+      const disabled = find.length === 0 || repl.length === 0;
+      ["#laf-pr-run", "#laf-pr-all"].forEach((id) => {
+        const b = p.querySelector(id);
+        if (!b) return;
+        b.disabled = disabled;
+        b.style.opacity = disabled ? "0.45" : "1";
+        b.style.cursor = disabled ? "not-allowed" : "pointer";
+      });
+    }
+
+    // 찾을단어를 고치면 순회 상태 리셋 + 바꿀단어 칸 초기화(빈칸) + 버튼 상태 갱신
+    p.querySelector("#laf-pr-find").addEventListener("input", () => {
+      _findState = { key: "", idx: -1 };
+      const cnt = p.querySelector("#laf-pr-count"); if (cnt) cnt.textContent = "-";
+      const repl = p.querySelector("#laf-pr-repl"); if (repl) repl.value = "";
+      updatePrButtons();
+    });
+    p.querySelector("#laf-pr-repl").addEventListener("input", updatePrButtons);
+    updatePrButtons(); // 초기 상태(두 칸 다 빈 칸 → 비활성)
+
+    // ★ find 는 trim(찾기와 동일 기준 — 공백 붙으면 "찾기는 되는데 치환 0개" 미스터리 방지).
+    //   repl 은 의도적 공백 치환 가능성 때문에 원문 유지.
+    p.querySelector("#laf-pr-run").addEventListener("click", async () => {
+      const f = p.querySelector("#laf-pr-find").value.trim();
+      const r = p.querySelector("#laf-pr-repl").value;
+      if (RUNNING) { log("업로드 실행 중에는 치환할 수 없어요", "warn"); return; }
+      if (_bulkRunning) { log("이미 치환 작업 중이에요 — 끝날 때까지 기다려주세요", "warn"); return; }
+      _bulkRunning = true;                 // ★ 연타 방지 (단독 치환도 잠금)
+      openLog();
+      try { await bulkPronReplace(f, r); }
+      finally { _bulkRunning = false; }
+    });
+    p.querySelector("#laf-pr-all").addEventListener("click", () => {
+      const f = p.querySelector("#laf-pr-find").value.trim();
+      const r = p.querySelector("#laf-pr-repl").value;
+      if (RUNNING) { log("업로드 실행 중에는 치환할 수 없어요", "warn"); return; }
+      openLog();
+      bulkPronReplaceAll(f, r);            // 내부에서 _bulkRunning 잠금
+    });
+    p.querySelector("#laf-pr-closeall").addEventListener("click", async () => {
+      // ★ 라스 자동저장은 debounce 1초. 저장 전에 닫으면 편집분이 날아감 →
+      //   닫기 전 넉넉히(2.5초) 기다려 저장이 확실히 끝난 뒤 한 챕터씩 닫는다.
+      if (_bulkRunning) { log("치환/닫기 작업 중이에요 — 끝날 때까지 기다려주세요", "warn"); return; }
+      _bulkRunning = true;   // ★ 연타 시 병렬 루프가 저장대기를 무력화하는 것 방지
+      openLog();
+      try {
+      let n = 0;
+      log("저장 대기 중… (안전하게 천천히 닫습니다)", "info");
+      await sleep(2500);
+      for (let round = 0; round < 40; round++) {
+        const btn = [...document.querySelectorAll("button")].find((b) => isEditCloseBtn(b) && isVisibleEl(b));
+        if (!btn) break;
+        btn.click();
+        n++;
+        log(`  📕 ${n}개째 닫음 (저장 대기)`, "info");
+        await sleep(2500);
+      }
+      log(n ? `📕 총 ${n}개 챕터 닫음` : "닫을 펼친 챕터가 없어요", n ? "ok" : "warn");
+      } finally { _bulkRunning = false; }
+    });
+
+    // 발음용 치환 섹션 접기/펼치기 (기본 접힘)
+    p.querySelector("#laf-pr-head").addEventListener("click", () => {
+      const body = p.querySelector("#laf-pr-body");
+      const arrow = p.querySelector("#laf-pr-arrow");
+      const hidden = body.style.display === "none";
+      body.style.display = hidden ? "flex" : "none";
+      arrow.textContent = hidden ? "▼" : "▶";
     });
 
     const folderInput = p.querySelector("#laf-folder");
