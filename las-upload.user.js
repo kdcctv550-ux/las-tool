@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LAS 자동 업로드 (폴더 → 라스)
 // @namespace    https://local.lars-auto-filler/
-// @version      3.6.0
+// @version      3.7.0
 // @description  폴더 한 번 선택하면 파일명 태그(m1s2 등)대로 라스 장면에 이미지/영상 자동 주입. 외부 통신 0건 — 전부 내 브라우저 안에서만 동작.
 // @match        https://lucystar.kr/*
 // @run-at       document-idle
@@ -737,7 +737,7 @@
     p.innerHTML = `
       <div id="laf-head" style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#171a23;cursor:move;border-bottom:1px solid rgba(255,255,255,.06)">
         <span style="font-weight:700;color:#a78bfa">🎬 LAS 자동 업로드</span>
-        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.6</span>
+        <span style="margin-left:auto;font-size:11px;color:#64748b">v3.7</span>
         <button id="laf-min" style="background:none;border:0;color:#94a3b8;cursor:pointer;font-size:16px;line-height:1">—</button>
       </div>
       <div id="laf-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;overflow:auto">
@@ -775,6 +775,7 @@
             <input id="laf-sb-to" type="number" min="1" placeholder="3" style="width:52px;padding:4px;background:#0a0c12;border:1px solid #334155;border-radius:4px;color:#e2e8f0">
             <button id="laf-sb-range" style="flex:1;background:#5b21b6;color:#fff;border:0;padding:7px;border-radius:8px;font-weight:600;cursor:pointer">범위만 켜기</button>
           </div>
+          <div id="laf-sb-status" style="display:none;text-align:center;font-size:13px;font-weight:700;padding:8px;border-radius:8px"></div>
 
           <div style="border-top:1px solid rgba(168,139,250,.25);margin-top:8px;padding-top:8px;display:flex;flex-direction:column;gap:6px">
             <div id="laf-pr-head" style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:12px;color:#c4b5fd;font-weight:600">
@@ -874,7 +875,28 @@
         }
         return true;
       });
-      if (!targets.length) { log("켤 서브장면이 없어요 (이미 다 켜졌거나 범위 밖)", "warn"); return; }
+      const setStatus = (msg, kind) => {
+        const el = document.getElementById("laf-sb-status");
+        if (!el) return;
+        const styles = {
+          done: "background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.4)",
+          working: "background:rgba(124,92,255,.15);color:#c4b5fd;border:1px solid rgba(124,92,255,.4)",
+          info: "background:rgba(148,163,184,.12);color:#cbd5e1;border:1px solid rgba(148,163,184,.3)",
+        };
+        el.style.cssText = "text-align:center;font-size:13px;font-weight:700;padding:8px;border-radius:8px;display:block;" + (styles[kind] || styles.info);
+        el.textContent = msg;
+      };
+
+      if (!targets.length) {
+        // 켤 게 없음 = 이미 다 켜졌다는 뜻 (범위 밖이 아니면 완료로 안내)
+        const msg = (fromM != null || toM != null)
+          ? "✔ 그 범위엔 켤 서브장면이 없어요 (이미 다 켜짐)"
+          : "🎉 모든 서브장면이 이미 켜져 있어요 — 완료!";
+        log(msg, "ok");
+        setStatus(msg, "done");
+        return;
+      }
+      setStatus(`서브장면 ${targets.length}개 켜는 중…`, "working");
       log(`서브장면 ${targets.length}개 켜는 중…`, "info");
       let ok = 0;
       for (const b of targets) {
@@ -882,6 +904,7 @@
         catch (e) { log(`  하나 실패: ${String(e).slice(0, 40)}`, "warn"); }
       }
       log(`✅ ${ok}개 서브장면 체크 완료`, "ok");
+      setStatus(`🎉 완료! ${ok}개 서브장면 켰어요`, "done");
     }
 
     p.querySelector("#laf-sb-all").addEventListener("click", () => bulkSubCheck(null, null));
