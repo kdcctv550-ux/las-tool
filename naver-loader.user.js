@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         네이버 상품 수집 → Lucy (로더)
 // @namespace    https://local.naver.scraper/
-// @version      1.0.0
+// @version      2.9.5
+// ★ 릴리스 규칙: 이 @version 과 naver-core.js 의 VERSION("2.9.5")을 항상 같은 숫자로 맞추세요.
 // @description  네이버 상품설명·후기 수집 도구 로더. 실제 코드는 GitHub 서버에서 매번 최신으로 불러옴(중앙 자동업데이트). 지인 배포용.
 // @author       ryu
 // @match        https://smartstore.naver.com/*

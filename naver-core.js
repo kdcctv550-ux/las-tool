@@ -35,6 +35,7 @@
    * ========================================================================= */
 
   const SLEEP = (ms) => new Promise((r) => setTimeout(r, ms));
+  // ★ 릴리스 규칙: 아래 "2.9.5" 를 올릴 때 naver-loader.user.js 의 @version 도 같은 숫자로 맞추세요.
   const VERSION = "v" + ((typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "2.9.5");
 
   const CFG = {
