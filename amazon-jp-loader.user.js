@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         아마존 재팬 상품 수집 → Lucy (로더)
 // @namespace    https://local.amazonjp.scraper/
-// @version      1.9.2
-// ★ 릴리스 규칙: 이 @version 과 amazon-jp-core.js 의 VERSION("1.9.2")을 항상 같은 숫자로 맞추세요.
+// @version      1.10.0
+// ★ 릴리스 규칙: 이 @version 과 amazon-jp-core.js 의 VERSION("1.10.0")을 항상 같은 숫자로 맞추세요.
 // @description  amazon.co.jp 상품 수집 도구 로더. 실제 코드는 GitHub 서버에서 매번 최신으로 불러옴(중앙 자동업데이트). 지인 배포용.
 // @author       ryu
 // @match        https://www.amazon.co.jp/*

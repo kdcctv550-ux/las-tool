@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         아마존 재팬 상품 수집 → Lucy JSON (독립/로컬)
 // @namespace    https://local.amazonjp.scraper/
-// @version      1.9.2
+// @version      1.10.0
 // @description  amazon.co.jp 상품페이지의 상품명·상세·스펙·후기를 긁어 shopping_product_v1 JSON(source:"amazon_jp")으로 뽑고, 라스(lucystar.kr) 숨은 '상품 JSON 데이터' 칸에 자동으로 꽂아줌. 일본어 원문 + 크롬 내장 번역 한국어 병기. 이미지는 파일로 저장해 캐릭터에 업로드.
 // @match        https://www.amazon.co.jp/*
 // @match        https://amazon.co.jp/*
@@ -39,8 +39,8 @@
    * ========================================================================= */
 
   const SLEEP = (ms) => new Promise((r) => setTimeout(r, ms));
-  // ★ 릴리스 규칙: 아래 "1.9.2" 을 올릴 때 amazon-jp-loader.user.js 의 @version 도 같은 숫자로.
-  const VERSION = "v" + ((typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "1.9.2");
+  // ★ 릴리스 규칙: 아래 "1.10.0" 을 올릴 때 amazon-jp-loader.user.js 의 @version 도 같은 숫자로.
+  const VERSION = "v" + ((typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "1.10.0");
 
   const CFG = {
     reviewMaxPages: 12,    // 후기 요청 총 횟수 상한(페이지 넘김 + 별점 변형 합계)
@@ -332,13 +332,13 @@
 
   function getRating() {
     const el = q("#acrPopover");
-    // ⭐ 1순위: 별 아이콘 클래스(a-star-4-5) — 언어 무관
-    let score = starFromClass(q("#averageCustomerReviews") || el);
-    if (!score) {
-      // 2순위: 텍스트. ⚠️ 일본어 "5つ星のうち4.5" 는 앞의 5를 먼저 집으면 전부 5점이 된다.
-      const t = (el && (el.getAttribute("title") || txt(el))) || txt(q('[data-hook="rating-out-of-text"]'));
-      score = starFromText(t);
-    }
+    // ⭐ 1순위는 **텍스트**다. 아이콘 클래스(a-star-4-5)는 0.5 단위라
+    //    4.4 를 4.5 로 반올림해 보여준다 — 실제로 4.4 를 4.5 로 내보낸 사고가 있었다.
+    //    ⚠️ 일본어 "5つ星のうち4.4" 는 앞의 5를 먼저 집으면 안 된다(starFromText 가 처리).
+    const t = (el && (el.getAttribute("title") || txt(el))) || txt(q('[data-hook="rating-out-of-text"]'));
+    let score = starFromText(t);
+    // 2순위: 아이콘 클래스. 0.5 단위라 정확하진 않지만 없는 것보단 낫다.
+    if (!score) score = starFromClass(q("#averageCustomerReviews") || el);
     // 개수는 숫자만 뽑으면 되므로 언어 무관: "1,480件の評価" / "1,480 ratings" / "평가 1,480개"
     const cnt = clean(txt(q("#acrCustomerReviewText"))).match(/([\d,]+)/);
     return { score, count: cnt ? cnt[1].replace(/,/g, "") : "" };
@@ -474,14 +474,28 @@
       if (!row) return "バリエーション";
       return dimFromId(row.id) || "バリエーション";
     };
-    // 신형 스와치 목록 — 선택된 것 + 나머지 변형들(각각 가격/품절 문구가 붙어있음)
-    qa("#twister .dimension-values-list li, #twister ul.a-button-list li, " +
-       '[id^="inline-twister-row-"] .dimension-values-list li').forEach((li) => {
+    // 신형 inline twister — **선택된 값만** 읽는다.
+    //   캡처 확인: #inline-twister-expanded-dimension-text-color_name → "Charmander (S)"
+    //   ⚠️ 스와치 목록(상품에 따라 40개 넘음)은 일부러 안 긁는다.
+    //      다른 변형은 각각 별도 상품 링크라 이 상품 대본과 무관하고,
+    //      이미지 스와치라 .swatch-title-text 가 아예 없어 어차피 빈 값이 나온다.
+    qa('[id^="inline-twister-expanded-dimension-text-"]').forEach((el) => {
+      const val = clean(txt(el));
+      if (!val) return;
+      const dim = (el.id.match(/^inline-twister-expanded-dimension-text-(.+)$/) || [, ""])[1];
+      add((dimFromId(dim) || "バリエーション") + " (選択中)", val);
+    });
+    // 구형 스와치 목록에서도 선택된 것 하나만
+    qa("#twister .dimension-values-list li, #twister ul.a-button-list li").forEach((li) => {
+      // 선택 표시는 li 안쪽 버튼에 붙기도 하고 li 자신에 붙기도 한다 → 둘 다 본다
+      const selected = !!q(".a-button-selected", li) ||
+        (li.classList && li.classList.contains("a-button-selected")) ||
+        (li.className || "").indexOf("swatch-selected") >= 0 ||
+        li.getAttribute("data-initiallyselected") === "true";
+      if (!selected) return;
       const val = clean(txt(q(".swatch-title-text-display, .swatch-title-text", li)));
       if (!val) return;
-      const info = clean(txt(q(".dimension-slot-info, #twisterAvailability, .inline-twister-swatch-price", li)));
-      const selected = !!q(".a-button-selected", li) || li.getAttribute("data-initiallyselected") === "true";
-      add(rowLabel(li) + (selected ? " (選択中)" : ""), val, info);
+      add(rowLabel(li) + " (選択中)", val);
     });
     return out;
   }
@@ -1345,6 +1359,9 @@
     ], [
       copied ? "" : "자동 복사에 실패했어요 — 아래 '📋 라스용 복사' 버튼을 눌러주세요.",
       curMsg,
+      // 품절이면 아마존이 가격을 아예 안 띄운다. 빈칸이 정상이지만 모르고 넘어가지 않게 알린다.
+      (!state.base.price && !state.base.availability.in_stock)
+        ? "품절 — 아마존이 가격을 표시하지 않아 가격이 비어 있어요 (정상)" : "",
       rd.blocked || "",
     ]);
   }
