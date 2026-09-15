@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         아마존 재팬 상품 수집 → Lucy JSON (독립/로컬)
 // @namespace    https://local.amazonjp.scraper/
-// @version      1.10.0
+// @version      1.11.0
 // @description  amazon.co.jp 상품페이지의 상품명·상세·스펙·후기를 긁어 shopping_product_v1 JSON(source:"amazon_jp")으로 뽑고, 라스(lucystar.kr) 숨은 '상품 JSON 데이터' 칸에 자동으로 꽂아줌. 일본어 원문 + 크롬 내장 번역 한국어 병기. 이미지는 파일로 저장해 캐릭터에 업로드.
 // @match        https://www.amazon.co.jp/*
 // @match        https://amazon.co.jp/*
@@ -39,8 +39,8 @@
    * ========================================================================= */
 
   const SLEEP = (ms) => new Promise((r) => setTimeout(r, ms));
-  // ★ 릴리스 규칙: 아래 "1.10.0" 을 올릴 때 amazon-jp-loader.user.js 의 @version 도 같은 숫자로.
-  const VERSION = "v" + ((typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "1.10.0");
+  // ★ 릴리스 규칙: 아래 "1.11.0" 을 올릴 때 amazon-jp-loader.user.js 의 @version 도 같은 숫자로.
+  const VERSION = "v" + ((typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "1.11.0");
 
   const CFG = {
     reviewMaxPages: 12,    // 후기 요청 총 횟수 상한(페이지 넘김 + 별점 변형 합계)
@@ -893,6 +893,130 @@
     return data;
   }
 
+  /* ---- 이미지 저장 폴더 기억 (File System Access API) --------------------
+     폴더를 한 번만 고르면 IndexedDB 에 핸들을 저장해 두고, 다음부터는 창 없이
+     그 안에 하위폴더를 만들어 저장한다. 사실상 '저장 경로 지정'과 같아진다.
+     ⚠️ 크롬은 두 번째 저장 때 "이 사이트가 폴더를 편집하도록 허용?" 3지선다를
+        띄운다 — 거기서 '매번 허용'을 고르면 그 뒤로는 아무것도 안 뜬다(크롬 122+).
+     지원 안 하는 브라우저(파이어폭스 등)는 예전 방식으로 폴백한다. */
+  const FSA_OK = (typeof window !== "undefined" && !!window.showDirectoryPicker);
+  const IDB_DB = "azjp_fsa", IDB_STORE = "handles", IDB_KEY = "imgDir";
+
+  function idbOpen() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open(IDB_DB, 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore(IDB_STORE); };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function idbGet(key) {
+    try {
+      const db = await idbOpen();
+      return await new Promise((res) => {
+        const rq = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).get(key);
+        rq.onsuccess = () => res(rq.result || null);
+        rq.onerror = () => res(null);
+      });
+    } catch (_) { return null; }
+  }
+  async function idbSet(key, val) {
+    try {
+      const db = await idbOpen();
+      return await new Promise((res) => {
+        const rq = db.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).put(val, key);
+        rq.onsuccess = () => res(true);
+        rq.onerror = () => res(false);
+      });
+    } catch (_) { return false; }
+  }
+  async function idbDel(key) {
+    try {
+      const db = await idbOpen();
+      return await new Promise((res) => {
+        const rq = db.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).delete(key);
+        rq.onsuccess = () => res(true);
+        rq.onerror = () => res(false);
+      });
+    } catch (_) { return false; }
+  }
+
+  // 저장해 둔 폴더 핸들을 꺼내고 쓰기 권한을 확보한다. 없거나 거부되면 null.
+  async function getSavedDir(promptIfNeeded) {
+    if (!FSA_OK) return null;
+    const h = await idbGet(IDB_KEY);
+    if (!h) return null;
+    try {
+      let p = await h.queryPermission({ mode: "readwrite" });
+      if (p === "granted") return h;
+      if (p === "prompt" && promptIfNeeded) {
+        p = await h.requestPermission({ mode: "readwrite" });   // 사용자 제스처 안에서만 성공
+        if (p === "granted") return h;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // 폴더를 새로 고르게 하고 저장한다. 취소하면 null.
+  async function pickAndRememberDir() {
+    if (!FSA_OK) return null;
+    try {
+      const dir = await window.showDirectoryPicker({ id: "azjpImgDir", mode: "readwrite" });
+      await idbSet(IDB_KEY, dir);
+      return dir;
+    } catch (_) { return null; }   // 사용자가 취소
+  }
+
+  // 날짜 태그 (하위폴더용): 260805
+  function dateTag() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return p(d.getFullYear() % 100) + p(d.getMonth() + 1) + p(d.getDate());
+  }
+
+  // 예전 방식: 다운로드 폴더에 <a download> 로 개별 저장
+  async function saveImagesLegacy(safe) {
+    let i = 0, ok = 0;
+    for (const u of state.selected) {
+      i++;
+      setStatus(`이미지 저장 중… (${i}/${state.selected.length})`);
+      const data = await toDataURL(u);
+      if (!data) continue;
+      try {
+        const blob = await (await fetch(data)).blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${safe}_${i}.jpg`;
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+        ok++;
+        await SLEEP(400);
+      } catch (_) {}
+    }
+    return ok;
+  }
+
+  // 기억한 폴더 안에 <260805_상품명> 하위폴더를 만들어 저장
+  async function saveImagesToDir(dir, safe) {
+    const sub = await dir.getDirectoryHandle(`${dateTag()}_${safe}`, { create: true });
+    let i = 0, ok = 0;
+    for (const u of state.selected) {
+      i++;
+      setStatus(`이미지 저장 중… (${i}/${state.selected.length})`);
+      const data = await toDataURL(u);
+      if (!data) continue;
+      try {
+        const blob = await (await fetch(data)).blob();
+        const fh = await sub.getFileHandle(`${safe}_${i}.jpg`, { create: true });
+        const w = await fh.createWritable();
+        await w.write(blob);
+        await w.close();
+        ok++;
+      } catch (_) {}
+    }
+    return { ok, folder: `${dateTag()}_${safe}` };
+  }
+
   /* ---- 번역 (크롬 내장 on-device Translator API) -------------------------- */
   const trState = { warned: false, reason: "", cache: new Map() };
   let _translator = { key: null, promise: null };
@@ -1387,27 +1511,54 @@
     const label = btn ? btn.textContent : "";
     if (btn) { btn.disabled = true; btn.style.opacity = ".6"; }
     const safe = ((state.base && state.base.title) || "product").replace(/[\\/:*?"<>|]/g, "_").slice(0, 30);
-    let i = 0, ok = 0;
-    for (const u of state.selected) {
-      i++;
-      setStatus(`이미지 저장 중… (${i}/${state.selected.length})`);
-      const data = await toDataURL(u);
-      if (!data) continue;
-      try {
-        const blob = await (await fetch(data)).blob();
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `${safe}_${i}.jpg`;
-        document.body.appendChild(a); a.click();
-        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
-        ok++;
-        await SLEEP(400);
-      } catch (_) {}
+
+    // ── 저장 폴더 결정 ─────────────────────────────────────────────
+    // 1) 기억해 둔 폴더가 있으면 그대로 (권한 prompt 는 이 클릭 제스처 안에서 요청)
+    // 2) 없으면 폴더 선택창을 띄운다(첫 사용). 안내 문구를 먼저 보여줌.
+    // 3) 취소하거나 브라우저가 미지원이면 → "폴더 없이 개별 저장할까요?" 확인
+    let dir = await getSavedDir(true);
+    let firstPick = false;
+    if (!dir && FSA_OK) {
+      setStatus("저장할 폴더를 한 번만 골라주세요 (다운로드 안에 '네이버수집' 같은 폴더를 만들어 고르면 됩니다). 다음부터는 안 물어봐요.");
+      dir = await pickAndRememberDir();
+      firstPick = !!dir;
     }
+
+    let ok = 0, folder = "";
+    if (dir) {
+      try {
+        const r = await saveImagesToDir(dir, safe);
+        ok = r.ok; folder = r.folder;
+      } catch (e) {
+        // 폴더가 삭제됐거나 권한이 끊긴 경우 → 기억 초기화하고 폴백 제안
+        await idbDel(IDB_KEY);
+        setStatusTemp("저장 폴더에 접근할 수 없어 기억을 지웠어요. 다시 눌러 폴더를 새로 골라주세요.");
+        if (btn) { btn.disabled = false; btn.textContent = label; btn.style.opacity = "1"; }
+        toastAt(btn, "❌ 폴더 접근 실패", false);
+        return;
+      }
+    } else {
+      // 미지원 또는 취소 → 사용자에게 개별 저장 여부를 묻는다
+      const go = window.confirm("폴더를 고르지 않았어요.\n폴더 없이 개별 파일로 (다운로드 폴더에) 저장할까요?\n\n예: 예전처럼 개별 저장\n아니오: 저장 안 함");
+      if (!go) {
+        if (btn) { btn.disabled = false; btn.textContent = label; btn.style.opacity = "1"; }
+        setStatusTemp("이미지 저장을 취소했어요.");
+        return;
+      }
+      ok = await saveImagesLegacy(safe);
+    }
+
     if (btn) { btn.disabled = false; btn.textContent = label; btn.style.opacity = "1"; }
-    setStatusTemp(ok ? `다운 완료 ✅ 이미지 ${ok}장 (${safe}_1.jpg …) · 캐릭터 카드에 업로드 또는 Ctrl+V`
-                     : "이미지 저장 실패 — 아마존 CDN 응답 없음. 다른 이미지를 골라보세요.");
-    toastAt(btn, ok ? `✅ 이미지 ${ok}장 저장됨` : "❌ 이미지 저장 실패", !!ok);
+    if (ok && folder) {
+      setStatusTemp(`저장 완료 ✅ 이미지 ${ok}장 → 폴더 '${folder}'${firstPick ? " (이 폴더를 기억했어요)" : ""}`);
+      toastAt(btn, `✅ ${ok}장 → ${folder}`, true);
+    } else if (ok) {
+      setStatusTemp(`다운 완료 ✅ 이미지 ${ok}장 (${safe}_1.jpg …) · 캐릭터 카드에 업로드 또는 Ctrl+V`);
+      toastAt(btn, `✅ 이미지 ${ok}장 저장됨`, true);
+    } else {
+      setStatusTemp("이미지 저장 실패 — 아마존 CDN 응답 없음. 다른 이미지를 골라보세요.");
+      toastAt(btn, "❌ 이미지 저장 실패", false);
+    }
   }
   // 버튼 위로 떠오르는 알림. 상태줄은 패널 위쪽이라 아래쪽 버튼을 눌러도 안 보인다.
   // ⚠️ 버튼 글씨는 건드리지 않는다 — 2열 버튼이 좁아 글자 수가 바뀌면 폭이 흔들린다.
@@ -1980,4 +2131,12 @@
   }, 300);
 
   try { GM_registerMenuCommand("아마존JP 패널 다시 열기", openPanel); } catch (_) {}
+  try {
+    GM_registerMenuCommand("이미지 저장 폴더 바꾸기(초기화)", async () => {
+      const okd = await idbDel(IDB_KEY);
+      alert(okd
+        ? "이미지 저장 폴더 기억을 지웠어요.\n다음에 '이미지 파일로 저장'을 누르면 폴더를 다시 고를 수 있어요."
+        : "초기화에 실패했어요. 잠시 후 다시 시도해 주세요.");
+    });
+  } catch (_) {}
 })();
