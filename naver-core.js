@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         네이버 상품 수집 → Lucy JSON (독립/로컬)
 // @namespace    https://local.naver.scraper/
-// @version      2.9.5
+// @version      2.9.8
 // @description  네이버 상품설명·후기를 긁어 쿠팡 도구와 동일한 shopping_product_v1 JSON으로 뽑고, 라스(lucystar.kr) 숨은 '상품 JSON 데이터' 칸에 자동으로 꽂아줌. 이미지는 파일로 저장해 캐릭터에 업로드. 화면 DOM만 다룸.
 // @match        https://smartstore.naver.com/*
 // @match        https://brand.naver.com/*
@@ -35,8 +35,8 @@
    * ========================================================================= */
 
   const SLEEP = (ms) => new Promise((r) => setTimeout(r, ms));
-  // ★ 릴리스 규칙: 아래 "2.9.5" 를 올릴 때 naver-loader.user.js 의 @version 도 같은 숫자로 맞추세요.
-  const VERSION = "v" + ((typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "2.9.5");
+  // ★ 릴리스 규칙: 아래 "2.9.8" 를 올릴 때 naver-loader.user.js 의 @version 도 같은 숫자로 맞추세요.
+  const VERSION = "v" + ((typeof GM_info !== "undefined" && GM_info.script && GM_info.script.version) || "2.9.8");
 
   const CFG = {
     reviewMaxPages: 8,    // 후기 페이지 최대 몇 장 넘길지
@@ -416,28 +416,121 @@
     const safe = (state.base.title || "네이버상품").replace(/[\\/:*?"<>|]/g, "_").slice(0, 50);
     downloadFile(state.lastText, `${safe}.json`);
   }
-  // 선택 이미지를 각각 .jpg 파일로 저장(캐릭터에 업로드/붙여넣기용)
+  // ── 저장 폴더 기억(IndexedDB) — 폴더선택 한 번만 하고 이후 자동 ────────
+  function _idbOpen() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open("nv_fs", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("h");
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function _saveHandle(h) {
+    try {
+      const db = await _idbOpen();
+      await new Promise((res, rej) => { const t = db.transaction("h", "readwrite"); t.objectStore("h").put(h, "dir"); t.oncomplete = res; t.onerror = () => rej(t.error); });
+    } catch (_) {}
+  }
+  async function _loadHandle() {
+    try {
+      const db = await _idbOpen();
+      return await new Promise((res) => { const t = db.transaction("h", "readonly"); const rq = t.objectStore("h").get("dir"); rq.onsuccess = () => res(rq.result || null); rq.onerror = () => res(null); });
+    } catch (_) { return null; }
+  }
+  async function _clearHandle() {
+    try { const db = await _idbOpen(); await new Promise((res) => { const t = db.transaction("h", "readwrite"); t.objectStore("h").delete("dir"); t.oncomplete = res; t.onerror = res; }); } catch (_) {}
+  }
+
+  // ── ZIP(무압축 store) 만들기 — 폴더선택 API 안될 때 폴백 ─────────────
+  function _crc32(u8) {
+    let crc = 0xFFFFFFFF;
+    for (let n = 0; n < u8.length; n++) {
+      crc ^= u8[n];
+      for (let k = 0; k < 8; k++) crc = (crc >>> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+  function _makeZip(files) {  // files: [{name, data:Uint8Array}]
+    const enc = new TextEncoder();
+    const u16 = (n) => [n & 255, (n >>> 8) & 255];
+    const u32 = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+    const parts = [], central = []; let offset = 0;
+    for (const f of files) {
+      const nb = enc.encode(f.name), crc = _crc32(f.data), sz = f.data.length;
+      const lh = [0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(nb.length), ...u16(0)];
+      parts.push(new Uint8Array(lh), nb, f.data);
+      const ch = [0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(crc), ...u32(sz), ...u32(sz), ...u16(nb.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)];
+      central.push(new Uint8Array(ch), nb);
+      offset += lh.length + nb.length + sz;
+    }
+    let cSize = 0; for (const c of central) cSize += c.length;
+    const eocd = [0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(cSize), ...u32(offset), ...u16(0)];
+    return new Blob([...parts, ...central, new Uint8Array(eocd)], { type: "application/zip" });
+  }
+
+  // 선택 이미지를 "날짜_상품명" 폴더에 저장. 폴더는 한 번만 고르면 기억됨(다음부턴 자동). 안되면 ZIP.
   async function saveImages() {
     if (!state.selected.length) { setStatus("선택된 이미지가 없어요."); return; }
     const safe = (state.base && state.base.title || "상품").replace(/[\\/:*?"<>|]/g, "_").slice(0, 30);
-    let i = 0, ok = 0;
-    for (const u of state.selected) {
-      i++;
-      setStatus(`이미지 저장 중… (${i}/${state.selected.length})`);
-      const data = await toDataURL(u);
-      if (!data) continue;
+    const d = new Date(), p = (n) => String(n).padStart(2, "0");
+    const folder = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${safe}`;
+
+    // 1) 폴더선택 API: 저장 폴더를 한 번만 고르면 기억 → 다음부턴 선택창 없이 자동.
+    //    ※ 브라우저 보안상 '다운로드 폴더 자체'는 못 고름(시스템). 다운로드 안에 폴더 하나(예: 네이버수집) 만들어 고르세요.
+    if (window.showDirectoryPicker) {
+      let root = null;
       try {
-        const blob = await (await fetch(data)).blob();
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob);
-        a.download = `${safe}_${i}.jpg`;
-        document.body.appendChild(a); a.click();
-        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
-        ok++;
-        await SLEEP(400);
-      } catch (_) {}
+        root = await _loadHandle();
+        if (root) {
+          let perm = await root.queryPermission({ mode: "readwrite" });
+          if (perm !== "granted") perm = await root.requestPermission({ mode: "readwrite" });
+          if (perm !== "granted") root = null;
+        }
+        if (!root) {
+          setStatus("저장할 폴더를 한 번만 선택하세요 (다운로드 안에 폴더 하나 만들어 고르면 됨)…");
+          root = await window.showDirectoryPicker({ mode: "readwrite" });
+          await _saveHandle(root);
+        }
+      } catch (e) {
+        if (e && e.name === "AbortError") { setStatus("폴더 선택을 취소했어요."); return; }
+        root = null;
+      }
+      if (root) {
+        try {
+          const dir = await root.getDirectoryHandle(folder, { create: true });
+          let n = 0, ok = 0;
+          for (const u of state.selected) {
+            n++; setStatus(`저장 중… (${n}/${state.selected.length})`);
+            const data = await toDataURL(u); if (!data) continue;
+            const blob = await (await fetch(data)).blob();
+            const fh = await dir.getFileHandle(`${safe}_${ok + 1}.jpg`, { create: true });
+            const w = await fh.createWritable(); await w.write(blob); await w.close(); ok++;
+          }
+          setStatus(`✅ ${root.name}/"${folder}" 에 ${ok}장 저장 완료 (다음부턴 폴더선택 없이 자동)`);
+          return;
+        } catch (e) { console.warn("[네이버긁기] 폴더 쓰기 실패 → ZIP", e); }
+      }
     }
-    setStatus(`이미지 ${ok}장 파일로 저장됨 ✅ 캐릭터 카드에 업로드(클릭) 또는 붙여넣기(Ctrl+V)`);
+
+    // 2) 폴백: ZIP 한 개 (다운로드 폴더에 자동 저장 → "모두 압축 풀기" 하면 폴더 생김)
+    setStatus("ZIP으로 묶는 중…");
+    try {
+      const files = [];
+      let n = 0;
+      for (const u of state.selected) {
+        n++; setStatus(`이미지 받는 중… (${n}/${state.selected.length})`);
+        const data = await toDataURL(u); if (!data) continue;
+        const blob = await (await fetch(data)).blob();
+        files.push({ name: `${safe}_${files.length + 1}.jpg`, data: new Uint8Array(await blob.arrayBuffer()) });
+      }
+      if (!files.length) { setStatus("받을 이미지가 없어요."); return; }
+      const zip = _makeZip(files);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(zip); a.download = `${folder}.zip`;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      setStatus(`✅ "${folder}.zip" 저장됨 — "모두 압축 풀기" 하면 폴더 안에 ${files.length}장`);
+    } catch (e) { setStatus("저장 오류: " + (e && e.message ? e.message : e)); }
   }
   function renderImagePicker() {
     const wrap = document.getElementById("nv-scr-imgs");
@@ -699,4 +792,5 @@
 
   // 템퍼몽키 메뉴에서 다시 열기(닫아도 복구)
   try { GM_registerMenuCommand("패널 다시 열기", openPanel); } catch (_) {}
+  try { GM_registerMenuCommand("이미지 저장 폴더 바꾸기(초기화)", async () => { await _clearHandle(); alert("초기화됨 — 다음 저장 때 폴더를 다시 선택합니다."); }); } catch (_) {}
 })();
